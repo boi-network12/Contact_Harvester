@@ -1,74 +1,124 @@
-import sqlite3 as sql
-import pandas as pd
+#!/usr/bin/env python3
+"""
+Contact Harvester
+Converts users table from SQLite to vCard (.vcf) file
+"""
+
+import sqlite3
+import argparse
 import os
-import pyfiglet as pf
+import sys
+from datetime import datetime
+import pyfiglet
 from alive_progress import alive_bar
 
-#!============= PRINT TITLE 
-title = "Contact Harvester"
-textArt = pf.figlet_format(title)
-print(textArt)
+
+def parse_arguments():
+    parser = argparse.ArgumentParser(description="Export contacts from SQLite to vCard file")
+    parser.add_argument("--db", default="users.db", help="Path to SQLite database")
+    parser.add_argument("--output", default="contacts.vcf", help="Output vCard file")
+    parser.add_argument("--version", action="store_true", help="Show version and exit")
+    return parser.parse_args()
 
 
-#!============ GET USERS LIST FROM DATABASE AND users TABLE
-def getUsers():
-        
-    db = sql.connect(file)
-    cur = db.cursor()
+def get_users(db_path: str) -> list:
+    if not os.path.isfile(db_path):
+        raise FileNotFoundError(f"Database not found: {db_path}")
 
-    cur.execute("SELECT * FROM users")
-    users = cur.fetchall()
-
-    db.close()
-
-    return users
-
+    try:
+        with sqlite3.connect(db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM users")
+            return cursor.fetchall()
+    except sqlite3.Error as e:
+        raise RuntimeError(f"Database error: {e}")
 
 
-#=========== MAIN FUCNTION OF APP
+def prepare_contact(user_row) -> dict:
+    # Adjust indexes according to your real schema
+    # Assuming: id, firstname?, fullname?, ..., phone (index 5)
+    full_name = (user_row[1] or "").strip()
+    phone = (user_row[5] or "").strip()
+
+    if not phone:
+        return None
+
+    # Very simple name splitting — improve later
+    parts = full_name.split(maxsplit=1)
+    first = parts[0] if parts else ""
+    last = parts[1] if len(parts) > 1 else ""
+
+    return {
+        "first": first,
+        "last": last,
+        "full": full_name,
+        "phone": phone,
+    }
+
+
+def generate_vcard_lines(contacts: list[dict], version="3.0") -> list[str]:
+    lines = []
+
+    for i, c in enumerate(contacts, 1):
+        if not c:
+            continue
+
+        lines.append("BEGIN:VCARD")
+        lines.append(f"VERSION:{version}")
+        lines.append(f"N:{c['last']};{c['first']};;;")
+        lines.append(f"FN:{c['full']}")
+        lines.append(f"TEL;TYPE=CELL:{c['phone']}")
+        lines.append(f"REV:{datetime.utcnow().isoformat()}+00:00")
+        lines.append("END:VCARD\n")
+
+    return lines
+
+
 def main():
-    file = "users.db"
-    if os.path.exists(file) :
-        users = getUsers()
-        userss = []
-        print("Compress Users List ...")
-        with alive_bar(len(users)) as bar:
-            for u in users:
-                phone = u[5]
-                name = u[1]
-                narr = name.split()
-                N = narr[0]
-                farr = narr[1:]
-                F=""
-                for i in farr:
-                    F += i
-                
-                userss.append([N,F,phone])
-                bar()    
+    args = parse_arguments()
 
-        makeVCF(userss)    
-    else:
-        print("DATABASE NOT EXISTS\n PROGRAM CLOSED!")
+    if args.version:
+        print("Contact Harvester v0.1.0")
+        return
 
-#============= VCF FILE WRITE
-def makeVCF(users):
-    t = []
-    print("CREATE ARRAY OF INFORMATION READY")
-    with alive_bar(len(users)) as bar:
-        for index,user in enumerate(users):
-            t.append('BEGIN:VCARD')
-            t.append('VERSION:2.1')
-            t.append(f'N;CHARSET=UTF-8;ENCODING=QUOTED-PRINTABLE:;{user[1]};{user[0]};;;')
-            t.append(f'FN;CHARSET=UTF-8;ENCODING=QUOTED-PRINTABLE:;{user[0]} {user[1]}')
-            t.append(f'TEL;CELL:{user[2]}')
-            t.append(f'REV:{(index + 1)}')
-            t.append('END:VCARD')
-            bar()
-    with open("contacts.vcf", 'w',encoding='UTF-8') as f:
-        f.writelines([l + '\n' for l in t])
-    print("FILE WRITED SUCCESSFULLY!")
-    print("APP CLOSED")
+    print(pyfiglet.figlet_format("Contact Harvester", font="small"))
 
-#=========== BEGINING OF PROGRAM
+    try:
+        print(f"Reading database: {args.db}")
+        rows = get_users(args.db)
+        print(f"Found {len(rows)} rows")
+
+        contacts = []
+        print("Processing contacts...")
+        with alive_bar(len(rows), title="Converting") as bar:
+            for row in rows:
+                contact = prepare_contact(row)
+                if contact:
+                    contacts.append(contact)
+                bar()
+
+        if not contacts:
+            print("No valid contacts found.")
+            return
+
+        print(f"Generating vCard for {len(contacts)} contacts...")
+        vcard_lines = generate_vcard_lines(contacts, version="3.0")
+
+        with open(args.output, "w", encoding="utf-8") as f:
+            f.write("\n".join(vcard_lines))
+
+        print(f"\nSuccess! Written {len(contacts)} contacts to → {args.output}")
+
+    except FileNotFoundError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+    except RuntimeError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(2)
+    except Exception as e:
+        print(f"Unexpected error: {e}", file=sys.stderr)
+        sys.exit(3)
+
+
 if __name__ == "__main__":
     main()
